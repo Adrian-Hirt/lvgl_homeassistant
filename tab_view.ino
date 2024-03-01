@@ -2,6 +2,8 @@
   #include "ha_panel.h"
   #include <sys/time.h>
   #include <curl/curl.h>
+  #include <string.h>
+  #include "cJSON.h"
 #else
   #include "secrets.h"
   #include "lvgl_functions.h"
@@ -19,6 +21,9 @@
 // Some globals
 lv_obj_t *wifi_connected_label;
 lv_obj_t *wifi_ip_address_label;
+lv_obj_t *living_room_temperature_value_text;
+lv_obj_t *living_room_humidity_value_text;
+lv_obj_t *living_room_pm_value_text;
 
 // Settings for wifi
 unsigned long previous_wifi_check_milis = 0;
@@ -27,6 +32,7 @@ unsigned long wifi_check_interval = 5000; // 5 seconds
 // API of Homeassistant
 const char* light_toggle_url = "http://homeassistant.local:8123/api/services/light/toggle";
 const char* light_turn_on_url = "http://homeassistant.local:8123/api/services/light/turn_on";
+const char* states_url = "http://homeassistant.local:8123/api/states";
 
 // Services of home assistant
 const char *services[] = {
@@ -40,6 +46,23 @@ static uint32_t esstisch_light_service = 0;
 static uint32_t wohnzimmerspots_service = 1;
 static uint32_t wohnzimmer_all_service = 2;
 static uint32_t nanoleaf_light_service = 3;
+
+// A string struct
+struct string {
+  char *ptr;
+  size_t len;
+};
+
+void init_string(struct string *s) {
+  s->len = 0;
+  s->ptr = malloc(1);
+
+  if (s->ptr == NULL) {
+    fprintf(stderr, "malloc() failed\n");
+    exit(1);
+  }
+  s->ptr[0] = '\0';
+};
 
 // Prints a message, for debugging
 void output(const char *message) {
@@ -90,7 +113,82 @@ void update_wifi_status() {
 size_t curl_dummy_write(char *ptr, size_t size, size_t nmemb, void *userdata) {
   return size * nmemb;
 }
+
+size_t curl_get_write(void *ptr, size_t size, size_t nmemb, struct string *s) {
+  size_t new_len = s->len + size * nmemb;
+  s->ptr = realloc(s->ptr, new_len + 1);
+
+  if (s->ptr == NULL) {
+    fprintf(stderr, "realloc() failed\n");
+    exit(1);
+  }
+  memcpy(s->ptr + s->len, ptr, size * nmemb);
+  s->ptr[new_len] = '\0';
+  s->len = new_len;
+
+  return size * nmemb;
+}
 #endif
+
+void update_states_from_api() {
+  cJSON *api_data = NULL;
+
+#ifdef SIMULATOR
+  // Create curl handle
+  CURL *curl = curl_easy_init();
+  // Set URL
+  curl_easy_setopt(curl, CURLOPT_URL, states_url);
+
+  // Setup the HTTP headers
+  struct curl_slist *list = NULL;
+  list = curl_slist_append(list, auth_token_header);
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
+
+  // Set our dummy write function
+  struct string get_result;
+  init_string(&get_result);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &curl_get_write);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &get_result);
+
+  // Perform the request and log the error if any error occured
+  CURLcode res = curl_easy_perform(curl);
+
+  // Cleanup the curl handle
+  curl_easy_cleanup(curl);
+
+  if(res == CURLE_OK) {
+    api_data = cJSON_Parse(get_result.ptr);
+  }
+  else {
+    return;
+  }
+#else
+
+#endif
+
+  cJSON *entity;
+  cJSON *entity_id;
+  cJSON *entity_state;
+  char* result[255];
+
+  cJSON_ArrayForEach(entity, api_data) {
+    entity_id = cJSON_GetObjectItemCaseSensitive(entity, "entity_id");
+    entity_state = cJSON_GetObjectItemCaseSensitive(entity, "state");
+
+    if(strcmp("sensor.vindstyrka_wohnzimmer_temperature", entity_id->valuestring) == 0) {
+      sprintf(result, "%s °C", entity_state->valuestring);
+      lv_label_set_text(living_room_temperature_value_text, result);
+    }
+    else if(strcmp("sensor.vindstyrka_wohnzimmer_humidity", entity_id->valuestring) == 0) {
+      sprintf(result, "%s %%", entity_state->valuestring);
+      lv_label_set_text(living_room_humidity_value_text, result);
+    }
+    else if(strcmp("sensor.vindstyrka_wohnzimmer_particulate_matter", entity_id->valuestring) == 0) {
+      sprintf(result, "%s mcg/m3", entity_state->valuestring);
+      lv_label_set_text(living_room_pm_value_text, result);
+    }
+  }
+}
 
 void perform_post_request(const char* url, const char* request_data) {
 #ifdef SIMULATOR
@@ -269,8 +367,50 @@ void addLightWidget(lv_obj_t *parent, const char *name, lv_coord_t x_coord, lv_c
 }
 
 void addDataContents(lv_obj_t *parent) {
-  lv_obj_t *label = lv_label_create(parent);
-  lv_label_set_text(label, "Coming soon :)");
+  // -------------------------------------------------------------------------
+  // Network info
+  // -------------------------------------------------------------------------
+  unsigned int value_x_offset = 120;
+
+  // Create the container
+  lv_obj_t *living_room_sensor_container = lv_obj_create(parent);
+  lv_obj_set_size(living_room_sensor_container, 330, 440);
+  lv_obj_set_pos(living_room_sensor_container, 0, 0);
+  lv_obj_set_style_pad_all(living_room_sensor_container, 10, NULL);
+  lv_obj_set_style_border_width(living_room_sensor_container, 0, NULL);
+  lv_obj_set_style_radius(living_room_sensor_container, 0, LV_PART_MAIN);
+
+  // Add label
+  lv_obj_t *widget_label = lv_label_create(living_room_sensor_container);
+  lv_label_set_text(widget_label, "Wohnzimmer");
+  static lv_style_t style;
+  lv_style_init(&style);
+  lv_style_set_text_font(&style, &lv_font_montserrat_20);
+  lv_obj_add_style(widget_label, &style, NULL);
+
+  // Add "temperature" label
+  lv_obj_t *temperature_label = lv_label_create(living_room_sensor_container);
+  lv_label_set_text(temperature_label, "Temperature:");
+  lv_obj_set_pos(temperature_label, 0, 30);
+  living_room_temperature_value_text = lv_label_create(living_room_sensor_container);
+  lv_obj_set_pos(living_room_temperature_value_text, value_x_offset, 30);
+  lv_label_set_text(living_room_temperature_value_text, "-");
+
+  // Add "temperature" label
+  lv_obj_t *humidity_label = lv_label_create(living_room_sensor_container);
+  lv_label_set_text(humidity_label, "Humidity:");
+  lv_obj_set_pos(humidity_label, 0, 50);
+  living_room_humidity_value_text = lv_label_create(living_room_sensor_container);
+  lv_obj_set_pos(living_room_humidity_value_text, value_x_offset, 50);
+  lv_label_set_text(living_room_humidity_value_text, "-");
+
+  // Add "temperature" label
+  lv_obj_t *pm_label = lv_label_create(living_room_sensor_container);
+  lv_label_set_text(pm_label, "PM 2.5:");
+  lv_obj_set_pos(pm_label, 0, 70);
+  living_room_pm_value_text = lv_label_create(living_room_sensor_container);
+  lv_obj_set_pos(living_room_pm_value_text, value_x_offset, 70);
+  lv_label_set_text(living_room_pm_value_text, "-");
 }
 
 void addInfoContents(lv_obj_t *parent) {
@@ -361,8 +501,8 @@ void layout() {
 
 
   /*Add 3 tabs (the tabs are page (lv_page) and can be scrolled*/
-  lv_obj_t *tab1 = lv_tabview_add_tab(tabview, "Lights");
   lv_obj_t *tab2 = lv_tabview_add_tab(tabview, "Data");
+  lv_obj_t *tab1 = lv_tabview_add_tab(tabview, "Lights");
   lv_obj_t *tab3 = lv_tabview_add_tab(tabview, "Info");
 
   /*Add content to the tabs*/
@@ -418,6 +558,9 @@ void loop() {
 
   if(current_millis - previous_wifi_check_milis >= wifi_check_interval) {
     update_wifi_status();
+
+    // Todo: read less often
+    update_states_from_api();
     previous_wifi_check_milis = current_millis;
   }
 }
