@@ -35,6 +35,11 @@ const char* light_turn_on_url = "http://homeassistant.local:8123/api/services/li
 const char* states_url = "http://homeassistant.local:8123/api/states";
 
 // Services of home assistant
+static uint32_t esstisch_light_service = 0;
+static uint32_t wohnzimmerspots_service = 1;
+static uint32_t wohnzimmer_all_service = 2;
+static uint32_t nanoleaf_light_service = 3;
+
 const char *services[] = {
   "light.esstischlampen",
   "light.wohnzimmerspots",
@@ -42,10 +47,14 @@ const char *services[] = {
   "light.shapes_8bc1"
 };
 
-static uint32_t esstisch_light_service = 0;
-static uint32_t wohnzimmerspots_service = 1;
-static uint32_t wohnzimmer_all_service = 2;
-static uint32_t nanoleaf_light_service = 3;
+typedef struct light_ui_elements_t {
+  lv_obj_t *toggle_button;
+  lv_obj_t *brightness_slider;
+  lv_obj_t *temp_slider;
+  lv_obj_t *hue_slider;
+} light_ui_elements_t;
+
+light_ui_elements_t light_ui_elements[4];
 
 // A string struct
 struct string {
@@ -170,6 +179,7 @@ void update_states_from_api() {
   cJSON *entity_id;
   cJSON *entity_state;
   char* result[255];
+  char* temp[255];
 
   cJSON_ArrayForEach(entity, api_data) {
     entity_id = cJSON_GetObjectItemCaseSensitive(entity, "entity_id");
@@ -186,6 +196,39 @@ void update_states_from_api() {
     else if(strcmp("sensor.vindstyrka_wohnzimmer_particulate_matter", entity_id->valuestring) == 0) {
       sprintf(result, "%s mcg/m3", entity_state->valuestring);
       lv_label_set_text(living_room_pm_value_text, result);
+    }
+    else {
+      for (uint32_t service_id = 0; service_id < 4; service_id++) {
+        const char* service_name = services[service_id];
+
+        if(strcmp(service_name, entity_id->valuestring) == 0) {
+          bool lamp_on = (strcmp("on", entity_state->valuestring) == 0);
+
+          int lamp_brightness = 0;
+          int lamp_temperature = 0;
+          int lamp_hue = 0;
+
+          if (lamp_on) {
+            cJSON* attributes = cJSON_GetObjectItemCaseSensitive(entity, "attributes");
+            lamp_brightness = cJSON_GetObjectItemCaseSensitive(attributes, "brightness")->valueint;
+            lamp_temperature = cJSON_GetObjectItemCaseSensitive(attributes, "color_temp_kelvin")->valueint;
+            lamp_hue = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(attributes, "hs_color"), 0)->valueint;
+          }
+
+          light_ui_elements_t current_light_ui_elements = light_ui_elements[service_id];
+
+          lv_slider_set_value(current_light_ui_elements.brightness_slider, lamp_brightness, LV_ANIM_OFF);
+          lv_slider_set_value(current_light_ui_elements.temp_slider, lamp_temperature, LV_ANIM_OFF);
+          lv_slider_set_value(current_light_ui_elements.hue_slider, lamp_hue, LV_ANIM_OFF);
+
+          if (lamp_on) {
+            lv_obj_set_style_bg_color(current_light_ui_elements.toggle_button, lv_palette_lighten(LV_PALETTE_GREEN, 1), 0);
+          }
+          else {
+            lv_obj_set_style_bg_color(current_light_ui_elements.toggle_button, lv_palette_lighten(LV_PALETTE_RED, 2), 0);
+          }
+        }
+      }
     }
   }
 }
@@ -239,8 +282,8 @@ void perform_post_request(const char* url, const char* request_data) {
 
 void light_toggle_button_event_callback(lv_event_t *event) {
   // Get the service identifier from the event data
-  uint32_t* service_id = (uint32_t*)lv_event_get_user_data(event);
-  const char *service = services[*service_id];
+  uint32_t service_id = (uint32_t)lv_event_get_user_data(event);
+  const char *service = services[service_id];
 
   // Build the POST request data
   char data[100];
@@ -248,12 +291,15 @@ void light_toggle_button_event_callback(lv_event_t *event) {
 
   // And perform the POST request
   perform_post_request(light_toggle_url, data);
+
+  // And manually run the update states
+  update_states_from_api();
 }
 
 void brightness_slider_event_callback(lv_event_t *event) {
   // Get the service identifier from the event data
-  uint32_t* service_id = (uint32_t*)lv_event_get_user_data(event);
-  const char *service = services[*service_id];
+  uint32_t service_id = (uint32_t)lv_event_get_user_data(event);
+  const char *service = services[service_id];
 
   // Get the slider value
   lv_obj_t *slider = lv_event_get_target(event);
@@ -261,29 +307,23 @@ void brightness_slider_event_callback(lv_event_t *event) {
 
   // Build the POST request data
   char data[100];
-  sprintf(data, "{\"entity_id\": \"%s\", \"brightness_pct\": %i}", service, slider_value);
+  sprintf(data, "{\"entity_id\": \"%s\", \"brightness\": %i}", service, slider_value);
 
   // And perform the POST request
   perform_post_request(light_turn_on_url, data);
+
+  // And manually run the update states
+  update_states_from_api();
 }
 
 void temp_slider_event_callback(lv_event_t *event) {
   // Get the service identifier from the event data
-  uint32_t* service_id = (uint32_t*)lv_event_get_user_data(event);
-  const char *service = services[*service_id];
+  uint32_t service_id = (uint32_t)lv_event_get_user_data(event);
+  const char *service = services[service_id];
 
-  // Get the slider value. We need to get the value from [0, 100]
-  // to [2000, 6500]. For this, we first take the value to [0, 4500]
-  // by multiplying with 45, and then to [2000, 6500] by adding 2000.
-  // Due to some bug, nanoleafs only work up to 6490, so we cap the value
-  // at that.
+  // Get the slider value.
   lv_obj_t *slider = lv_event_get_target(event);
   int slider_value = (int)lv_slider_get_value(slider);
-  slider_value *= 45;
-  slider_value += 2000;
-  if (slider_value > 6490){
-    slider_value = 6490;
-  }
 
   // Build the POST request data
   char data[100];
@@ -291,20 +331,19 @@ void temp_slider_event_callback(lv_event_t *event) {
 
   // And perform the POST request
   perform_post_request(light_turn_on_url, data);
+
+  // And manually run the update states
+  update_states_from_api();
 }
 
-void rgb_slider_event_callback(lv_event_t *event) {
+void hue_slider_event_callback(lv_event_t *event) {
   // Get the service identifier from the event data
-  uint32_t* service_id = (uint32_t*)lv_event_get_user_data(event);
-  const char *service = services[*service_id];
+  uint32_t service_id = (uint32_t)lv_event_get_user_data(event);
+  const char *service = services[service_id];
 
-  // Get the slider value. We use HS mode from home assistant, where
-  // the hue must be [0, 360] and S in [0, 100] (we leave S fixed at 100).
-  // We can therefore simply multiply the value by 3.6 to get
-  // the hue.
+  // Get the slider value. We leave the saturation at 100.
   lv_obj_t *slider = lv_event_get_target(event);
   int slider_value = (int)lv_slider_get_value(slider);
-  slider_value *= 3.6;
 
   // Build the POST request data
   char data[100];
@@ -312,9 +351,15 @@ void rgb_slider_event_callback(lv_event_t *event) {
 
   // And perform the POST request
   perform_post_request(light_turn_on_url, data);
+
+  // And manually run the update states
+  update_states_from_api();
 }
 
-void addLightWidget(lv_obj_t *parent, const char *name, lv_coord_t x_coord, lv_coord_t y_coord, uint32_t *service_id) {
+void addLightWidget(lv_obj_t *parent, const char *name, lv_coord_t x_coord, lv_coord_t y_coord, uint32_t service_id) {
+  // To keep track of the elements
+  light_ui_elements_t current_light_ui_elements;
+
   // Create the container
   lv_obj_t *container = lv_obj_create(parent);
   lv_obj_set_size(container, 160, 440);
@@ -337,6 +382,8 @@ void addLightWidget(lv_obj_t *parent, const char *name, lv_coord_t x_coord, lv_c
   lv_obj_set_pos(btn, 0, y_coord + 24);
   lv_obj_set_style_radius(container, 0, LV_PART_MAIN);
   lv_obj_set_size(btn, 140, 100);
+  lv_obj_set_style_bg_color(btn, lv_palette_lighten(LV_PALETTE_GREY, 1), 0);
+  current_light_ui_elements.toggle_button = btn;
 
   // Add button callback
   lv_obj_add_event_cb(btn, light_toggle_button_event_callback, LV_EVENT_CLICKED, service_id);
@@ -352,18 +399,27 @@ void addLightWidget(lv_obj_t *parent, const char *name, lv_coord_t x_coord, lv_c
   lv_obj_set_pos(brightness_slider, 10, y_coord + 144);
   lv_obj_set_size(brightness_slider, 15, 260);
   lv_obj_add_event_cb(brightness_slider, brightness_slider_event_callback, LV_EVENT_RELEASED, service_id);
+  lv_slider_set_range(brightness_slider, 0, 254);
+  current_light_ui_elements.brightness_slider = brightness_slider;
 
   // Create slider for light temp
   lv_obj_t *temp_slider = lv_slider_create(container);
   lv_obj_set_pos(temp_slider, 62, y_coord + 144);
   lv_obj_set_size(temp_slider, 15, 260);
   lv_obj_add_event_cb(temp_slider, temp_slider_event_callback, LV_EVENT_RELEASED, service_id);
+  lv_slider_set_range(temp_slider, 2202, 4000);
+  current_light_ui_elements.temp_slider = temp_slider;
 
   // Create slider for rgb value
-  lv_obj_t *rgb_slider = lv_slider_create(container);
-  lv_obj_set_pos(rgb_slider, 115, y_coord + 144);
-  lv_obj_set_size(rgb_slider, 15, 260);
-  lv_obj_add_event_cb(rgb_slider, rgb_slider_event_callback, LV_EVENT_RELEASED, service_id);
+  lv_obj_t *hue_slider = lv_slider_create(container);
+  lv_obj_set_pos(hue_slider, 115, y_coord + 144);
+  lv_obj_set_size(hue_slider, 15, 260);
+  lv_obj_add_event_cb(hue_slider, hue_slider_event_callback, LV_EVENT_RELEASED, service_id);
+  lv_slider_set_range(hue_slider, 0, 360);
+  current_light_ui_elements.hue_slider = hue_slider;
+
+  // Store references to UI elements
+  light_ui_elements[service_id] = current_light_ui_elements;
 }
 
 void addDataContents(lv_obj_t *parent) {
@@ -501,16 +557,16 @@ void layout() {
 
 
   /*Add 3 tabs (the tabs are page (lv_page) and can be scrolled*/
-  lv_obj_t *tab2 = lv_tabview_add_tab(tabview, "Data");
   lv_obj_t *tab1 = lv_tabview_add_tab(tabview, "Lights");
+  lv_obj_t *tab2 = lv_tabview_add_tab(tabview, "Data");
   lv_obj_t *tab3 = lv_tabview_add_tab(tabview, "Info");
 
   /*Add content to the tabs*/
   // Tab 1
-  addLightWidget(tab1, "Spots", 0, 0, &wohnzimmerspots_service);
-  addLightWidget(tab1, "Table", 175, 0, &esstisch_light_service);
-  addLightWidget(tab1, "All", 350, 0, &wohnzimmer_all_service);
-  addLightWidget(tab1, "Nanoleaf", 525, 0, &nanoleaf_light_service);
+  addLightWidget(tab1, "Spots", 0, 0, wohnzimmerspots_service);
+  addLightWidget(tab1, "Table", 175, 0, esstisch_light_service);
+  addLightWidget(tab1, "All", 350, 0, wohnzimmer_all_service);
+  addLightWidget(tab1, "Nanoleaf", 525, 0, nanoleaf_light_service);
 
   // Tab 2
   addDataContents(tab2);
