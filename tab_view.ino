@@ -3,13 +3,14 @@
   #include <sys/time.h>
   #include <curl/curl.h>
   #include <string.h>
-  #include "cJSON.h"
 #else
   #include "secrets.h"
   #include "lvgl_functions.h"
   #include <WiFi.h>
   #include <HTTPClient.h>
 #endif
+
+#include "cJSON.h"
 
 // Some variables are in a (not-checked in) header file, you need to define the
 // following constants in your codebase:
@@ -56,6 +57,7 @@ typedef struct light_ui_elements_t {
 
 light_ui_elements_t light_ui_elements[4];
 
+#ifdef SIMULATOR
 // A string struct
 struct string {
   char *ptr;
@@ -72,13 +74,14 @@ void init_string(struct string *s) {
   }
   s->ptr[0] = '\0';
 };
+#endif
 
 // Prints a message, for debugging
 void output(const char *message) {
 #ifdef SIMULATOR
   printf(message);
 #else
-  Serial.print(message);
+  Serial.println(message);
 #endif
 }
 
@@ -172,7 +175,7 @@ void update_states_from_api() {
     return;
   }
 #else
-
+  api_data = cJSON_Parse("{}");
 #endif
 
   cJSON *entity;
@@ -185,17 +188,19 @@ void update_states_from_api() {
     entity_id = cJSON_GetObjectItemCaseSensitive(entity, "entity_id");
     entity_state = cJSON_GetObjectItemCaseSensitive(entity, "state");
 
+    output(entity_id->valuestring);
+
     if(strcmp("sensor.vindstyrka_wohnzimmer_temperature", entity_id->valuestring) == 0) {
-      sprintf(result, "%s °C", entity_state->valuestring);
-      lv_label_set_text(living_room_temperature_value_text, result);
+      // sprintf(result, "%s °C", entity_state->valuestring);
+      // lv_label_set_text(living_room_temperature_value_text, result);
     }
     else if(strcmp("sensor.vindstyrka_wohnzimmer_humidity", entity_id->valuestring) == 0) {
-      sprintf(result, "%s %%", entity_state->valuestring);
-      lv_label_set_text(living_room_humidity_value_text, result);
+      // sprintf(result, "%s %%", entity_state->valuestring);
+      // lv_label_set_text(living_room_humidity_value_text, result);
     }
     else if(strcmp("sensor.vindstyrka_wohnzimmer_particulate_matter", entity_id->valuestring) == 0) {
-      sprintf(result, "%s mcg/m3", entity_state->valuestring);
-      lv_label_set_text(living_room_pm_value_text, result);
+      // sprintf(result, "%s mcg/m3", entity_state->valuestring);
+      // lv_label_set_text(living_room_pm_value_text, result);
     }
     else {
       for (uint32_t service_id = 0; service_id < 4; service_id++) {
@@ -282,8 +287,8 @@ void perform_post_request(const char* url, const char* request_data) {
 
 void light_toggle_button_event_callback(lv_event_t *event) {
   // Get the service identifier from the event data
-  uint32_t service_id = (uint32_t)lv_event_get_user_data(event);
-  const char *service = services[service_id];
+  uint32_t* service_id = (uint32_t*)lv_event_get_user_data(event);
+  const char *service = services[*service_id];
 
   // Build the POST request data
   char data[100];
@@ -298,8 +303,8 @@ void light_toggle_button_event_callback(lv_event_t *event) {
 
 void brightness_slider_event_callback(lv_event_t *event) {
   // Get the service identifier from the event data
-  uint32_t service_id = (uint32_t)lv_event_get_user_data(event);
-  const char *service = services[service_id];
+  uint32_t* service_id = (uint32_t*)lv_event_get_user_data(event);
+  const char *service = services[*service_id];
 
   // Get the slider value
   lv_obj_t *slider = lv_event_get_target(event);
@@ -318,8 +323,8 @@ void brightness_slider_event_callback(lv_event_t *event) {
 
 void temp_slider_event_callback(lv_event_t *event) {
   // Get the service identifier from the event data
-  uint32_t service_id = (uint32_t)lv_event_get_user_data(event);
-  const char *service = services[service_id];
+  uint32_t* service_id = (uint32_t*)lv_event_get_user_data(event);
+  const char *service = services[*service_id];
 
   // Get the slider value.
   lv_obj_t *slider = lv_event_get_target(event);
@@ -338,8 +343,8 @@ void temp_slider_event_callback(lv_event_t *event) {
 
 void hue_slider_event_callback(lv_event_t *event) {
   // Get the service identifier from the event data
-  uint32_t service_id = (uint32_t)lv_event_get_user_data(event);
-  const char *service = services[service_id];
+  uint32_t* service_id = (uint32_t*)lv_event_get_user_data(event);
+  const char *service = services[*service_id];
 
   // Get the slider value. We leave the saturation at 100.
   lv_obj_t *slider = lv_event_get_target(event);
@@ -356,7 +361,7 @@ void hue_slider_event_callback(lv_event_t *event) {
   update_states_from_api();
 }
 
-void addLightWidget(lv_obj_t *parent, const char *name, lv_coord_t x_coord, lv_coord_t y_coord, uint32_t service_id) {
+void addLightWidget(lv_obj_t *parent, const char *name, lv_coord_t x_coord, lv_coord_t y_coord, uint32_t *service_id) {
   // To keep track of the elements
   light_ui_elements_t current_light_ui_elements;
 
@@ -419,7 +424,10 @@ void addLightWidget(lv_obj_t *parent, const char *name, lv_coord_t x_coord, lv_c
   current_light_ui_elements.hue_slider = hue_slider;
 
   // Store references to UI elements
-  light_ui_elements[service_id] = current_light_ui_elements;
+  light_ui_elements[0] = current_light_ui_elements;
+  light_ui_elements[1] = current_light_ui_elements;
+  light_ui_elements[2] = current_light_ui_elements;
+  light_ui_elements[3] = current_light_ui_elements;
 }
 
 void addDataContents(lv_obj_t *parent) {
@@ -563,10 +571,10 @@ void layout() {
 
   /*Add content to the tabs*/
   // Tab 1
-  addLightWidget(tab1, "Spots", 0, 0, wohnzimmerspots_service);
-  addLightWidget(tab1, "Table", 175, 0, esstisch_light_service);
-  addLightWidget(tab1, "All", 350, 0, wohnzimmer_all_service);
-  addLightWidget(tab1, "Nanoleaf", 525, 0, nanoleaf_light_service);
+  addLightWidget(tab1, "Spots", 0, 0, &wohnzimmerspots_service);
+  addLightWidget(tab1, "Table", 175, 0, &esstisch_light_service);
+  addLightWidget(tab1, "All", 350, 0, &wohnzimmer_all_service);
+  addLightWidget(tab1, "Nanoleaf", 525, 0, &nanoleaf_light_service);
 
   // Tab 2
   addDataContents(tab2);
